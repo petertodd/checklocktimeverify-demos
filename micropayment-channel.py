@@ -18,7 +18,7 @@ import bitcoin.rpc
 logging.root.setLevel(logging.DEBUG)
 
 
-# IF <recv_pub> CHECKSIG ELSE <expiry> NOP2 DROP ENDIF
+# IF <recv_pub> CHECKSIG ELSE <expiry> 1 NOP2 2DROP ENDIF
 # <send_pub> CHECKSIG
 
 class MicropaymentParams:
@@ -29,7 +29,7 @@ class MicropaymentParams:
         return CScript([OP_IF] + \
                            list(self.receiver_deposit_scriptPubKey) + \
                        [OP_ELSE,
-                           self.expiry_nlocktime, OP_NOP2, OP_DROP,
+                           self.expiry_nlocktime, 1, OP_NOP2, OP_2DROP,
                         OP_ENDIF] + \
                        list(self.sender_deposit_scriptPubKey),
                       )
