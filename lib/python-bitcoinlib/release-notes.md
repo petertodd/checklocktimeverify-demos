@@ -1,10 +1,37 @@
 python-bitcoinlib release notes
 ===============================
 
+v0.4.0
+======
+
+Major fix: OpenSSL 1.0.1k rejects non-canonical DER signatures, which Bitcoin
+Core does not, so we now canonicalize signatures prior to passing them to
+OpenSSL. Secondly we now only generate low-S DER signatures as per BIP62.
+
+API changes that might break compatibility with existing code:
+
+* MAX_MONEY is now a core chain parameter
+* MainParams now inherits from CoreMainParams rather than CoreChainParams
+* str(<COutPoint>) now returns hash:n format; previously was same as repr()
+* RawProxy() no longer has _connection parameter
+
+Notable bugfixes:
+
+* MsgSerializable.to_bytes() no longer clobbers testnet params
+* HTTPS RPC connections now use port 443 as default
+* No longer assumes bitcoin.conf specifes rpcuser
+
+New features:
+
+* New RPC calls: dumpprivkey, importaddress
+* Added P2P support for msg_notfound and msg_reject
+* Added support for IPv6 addr messages
+
+
 v0.3.0
 ======
 
-Major change: cleaned up what symbols are exported by modules. __all__ is now
+Major change: cleaned up what symbols are exported by modules. \_\_all\_\_ is now
 used extensively, which may break some applications that were not importing the
 right modules. Along those lines some implementation details like the ssl
 attribute of the bitcoin.core.key module, and the entire bitcoin.core.bignum

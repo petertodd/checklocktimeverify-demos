@@ -1,5 +1,5 @@
 # Copyright (C) 2007 Jan-Klaas Kollhof
-# Copyright (C) 2011-2014 The python-bitcoinlib developers
+# Copyright (C) 2011-2015 The python-bitcoinlib developers
 #
 # This file is part of python-bitcoinlib.
 #
@@ -33,7 +33,7 @@ except ImportError:
 import bitcoin
 from bitcoin.core import COIN, lx, b2lx, CBlock, CTransaction, COutPoint, CTxOut
 from bitcoin.core.script import CScript
-from bitcoin.wallet import CBitcoinAddress
+from bitcoin.wallet import CBitcoinAddress, CBitcoinSecret
 
 DEFAULT_USER_AGENT = "AuthServiceProxy/0.1"
 
@@ -55,12 +55,10 @@ class JSONRPCException(Exception):
 
 
 class RawProxy(object):
-    # FIXME: need a CChainParams rather than hard-coded service_port
     def __init__(self, service_url=None,
                        service_port=None,
                        btc_conf_file=None,
-                       timeout=DEFAULT_HTTP_TIMEOUT,
-                       _connection=None):
+                       timeout=DEFAULT_HTTP_TIMEOUT):
         """Low-level JSON-RPC proxy
 
         Unlike Proxy no conversion is done from the raw JSON objects.
@@ -79,7 +77,8 @@ class RawProxy(object):
 
             # Extract contents of bitcoin.conf to build service_url
             with open(btc_conf_file, 'r') as fd:
-                conf = {}
+                # Bitcoin Core accepts empty rpcuser, not specified in btc_conf_file
+                conf = {'rpcuser': ""}
                 for line in fd.readlines():
                     if '#' in line:
                         line = line[:line.index('#')]
@@ -100,6 +99,9 @@ class RawProxy(object):
                 else:
                     raise ValueError('Unknown rpcssl value %r' % conf['rpcssl'])
 
+                if 'rpcpassword' not in conf:
+                    raise ValueError('The value of rpcpassword not specified in the configuration file: %s' % btc_conf_file)
+
                 service_url = ('%s://%s:%s@localhost:%d' %
                     ('https' if conf['rpcssl'] else 'http',
                      conf['rpcuser'], conf['rpcpassword'],
@@ -107,8 +109,15 @@ class RawProxy(object):
 
         self.__service_url = service_url
         self.__url = urlparse.urlparse(service_url)
+
+        if self.__url.scheme not in ('https', 'http'):
+            raise ValueError('Unsupported URL scheme %r' % self.__url.scheme)
+
         if self.__url.port is None:
-            port = 80
+            if self.__url.scheme == 'https':
+                port = httplib.HTTPS_PORT
+            else:
+                port = httplib.HTTP_PORT
         else:
             port = self.__url.port
         self.__id_count = 0
@@ -116,10 +125,7 @@ class RawProxy(object):
         authpair = authpair.encode('utf8')
         self.__auth_header = b"Basic " + base64.b64encode(authpair)
 
-        if _connection:
-            # Callables re-use the connection of the original proxy
-            self.__conn = _connection
-        elif self.__url.scheme == 'https':
+        if self.__url.scheme == 'https':
             self.__conn = httplib.HTTPSConnection(self.__url.hostname, port=port,
                                                   key_file=None, cert_file=None,
                                                   timeout=timeout)
@@ -184,6 +190,9 @@ class RawProxy(object):
         return json.loads(http_response.read().decode('utf8'),
                           parse_float=decimal.Decimal)
 
+    def __del__(self):
+        self.__conn.close()
+
 
 class Proxy(RawProxy):
     def __init__(self, service_url=None,
@@ -211,6 +220,14 @@ class Proxy(RawProxy):
         super(Proxy, self).__init__(service_url=service_url, service_port=service_port, btc_conf_file=btc_conf_file,
                                     timeout=timeout,
                                     **kwargs)
+
+    def dumpprivkey(self, addr):
+        """Return the private key matching an address
+        """
+        r = self._call('dumpprivkey', str(addr))
+
+        return CBitcoinSecret(r)
+
     def getaccountaddress(self, account=None):
         """Return the current Bitcoin address for receiving payments to this account."""
         r = self._call('getaccountaddress', account)
@@ -371,6 +388,19 @@ class Proxy(RawProxy):
         r['bestblock'] = lx(r['bestblock'])
         return r
 
+    def importaddress(self, addr, label=None, rescan=True):
+        """Adds an address or pubkey to wallet without the associated privkey."""
+        addr = str(addr)
+
+        if label is not None:
+            if rescan:
+                r = self._call('importaddress', addr, label, True)
+            else:
+                r = self._call('importaddress', addr, label)
+        else:
+            r = self._call('importaddress', addr)
+        return r
+
     def listunspent(self, minconf=0, maxconf=9999999, addrs=None):
         """Return unspent transaction outputs in wallet
 
@@ -413,6 +443,12 @@ class Proxy(RawProxy):
             r = self._call('sendrawtransaction', hextx, True)
         else:
             r = self._call('sendrawtransaction', hextx)
+        return lx(r)
+
+    def sendmany(self, fromaccount, payments, minconf=1, comment=''):
+        """Sent amount to a given address"""
+        json_payments = {str(addr):float(amount)/COIN for addr,amount in payments.items()}
+        r = self._call('sendmany', fromaccount, json_payments, minconf, comment)
         return lx(r)
 
     def sendtoaddress(self, addr, amount):

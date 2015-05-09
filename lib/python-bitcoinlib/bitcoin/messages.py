@@ -1,4 +1,4 @@
-# Copyright (C) 2012-2014 The python-bitcoinlib developers
+# Copyright (C) 2012-2015 The python-bitcoinlib developers
 #
 # This file is part of python-bitcoinlib.
 #
@@ -33,7 +33,7 @@ else:
 from bitcoin.core import *
 from bitcoin.core.serialize import *
 from bitcoin.net import *
-from bitcoin import MainParams
+import bitcoin
 
 MSG_TX = 1
 MSG_BLOCK = 2
@@ -51,11 +51,11 @@ class MsgSerializable(Serializable):
     def msg_deser(cls, f, protover=PROTO_VERSION):
         raise NotImplementedError
 
-    def to_bytes(self, params=MainParams()):
+    def to_bytes(self):
         f = _BytesIO()
         self.msg_ser(f)
         body = f.getvalue()
-        res = params.MESSAGE_START
+        res = bitcoin.params.MESSAGE_START
         res += self.command
         res += b"\x00" * (12 - len(self.command))
         res += struct.pack(b"<I", len(body))
@@ -74,13 +74,13 @@ class MsgSerializable(Serializable):
         return MsgSerializable.stream_deserialize(f, protover=protover)
 
     @classmethod
-    def stream_deserialize(cls, f, params=MainParams(), protover=PROTO_VERSION):
+    def stream_deserialize(cls, f, protover=PROTO_VERSION):
         recvbuf = ser_read(f, 4 + 12 + 4 + 4)
 
         # check magic
-        if recvbuf[:4] != params.MESSAGE_START:
+        if recvbuf[:4] != bitcoin.params.MESSAGE_START:
             raise ValueError("Invalid message start '%s', expected '%s'" %
-                             (b2x(recvbuf[:4]), b2x(params.MESSAGE_START)))
+                             (b2x(recvbuf[:4]), b2x(bitcoin.params.MESSAGE_START)))
 
         # remaining header fields: command, msg length, checksum
         command = recvbuf[4:4+12].split(b"\x00", 1)[0]
@@ -259,6 +259,25 @@ class msg_getdata(MsgSerializable):
     def __repr__(self):
         return "msg_getdata(inv=%s)" % (repr(self.inv))
 
+class msg_notfound(MsgSerializable):
+    command = b"notfound"
+
+    def __init__(self, protover=PROTO_VERSION):
+        super(msg_notfound, self).__init__(protover)
+        self.inv = []
+
+    @classmethod
+    def msg_deser(cls, f, protover=PROTO_VERSION):
+        c = cls()
+        c.inv = VectorSerializer.stream_deserialize(CInv, f)
+        return c
+
+    def msg_ser(self, f):
+        VectorSerializer.stream_serialize(CInv, self.inv, f)
+
+    def __repr__(self):
+        return "msg_notfound(inv=%s)" % (repr(self.inv))
+
 
 class msg_getblocks(MsgSerializable):
     command = b"getblocks"
@@ -423,6 +442,32 @@ class msg_pong(MsgSerializable):
         return "msg_pong(0x%x)" % (self.nonce,)
 
 
+class msg_reject(MsgSerializable):
+    command = b"reject"
+
+    def __init__(self, protover=PROTO_VERSION):
+        super(msg_reject, self).__init__(protover)
+        self.message = b'(Message Unitialized)'
+        self.ccode = b'\0'
+        self.reason = b'(Reason Unitialized)'
+
+    @classmethod
+    def msg_deser(cls, f, protover=PROTO_VERSION):
+        c = cls()
+        c.message = VarStringSerializer.stream_deserialize(f)
+        c.ccode = struct.unpack(b"<c", ser_read(f,1))[0]
+        c.reason = VarStringSerializer.stream_deserialize(f)
+        return c
+
+    def msg_ser(self, f):
+        VarStringSerializer.stream_serialize(self.message, f)
+        f.write(struct.pack(b"<c", self.ccode))
+        VarStringSerializer.stream_serialize(self.reason, f)
+
+    def __repr__(self):
+        return "msg_reject(messsage=%s, ccode=%s, reason=%s)" % (self.message, self.ccode, self.reason)
+
+
 class msg_mempool(MsgSerializable):
     command = b"mempool"
 
@@ -440,9 +485,9 @@ class msg_mempool(MsgSerializable):
         return "msg_mempool()"
 
 msg_classes = [msg_version, msg_verack, msg_addr, msg_alert, msg_inv,
-               msg_getdata, msg_getblocks, msg_getheaders,
+               msg_getdata, msg_notfound, msg_getblocks, msg_getheaders,
                msg_headers, msg_tx, msg_block, msg_getaddr, msg_ping,
-               msg_pong, msg_mempool]
+               msg_pong, msg_reject, msg_mempool]
 
 messagemap = {}
 for cls in msg_classes:

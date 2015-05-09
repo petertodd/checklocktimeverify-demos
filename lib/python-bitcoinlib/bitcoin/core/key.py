@@ -1,5 +1,5 @@
 # Copyright (C) 2011 Sam Rushing
-# Copyright (C) 2012-2014 The python-bitcoinlib developers
+# Copyright (C) 2012-2015 The python-bitcoinlib developers
 #
 # This file is part of python-bitcoinlib.
 #
@@ -21,10 +21,19 @@ import ctypes.util
 import hashlib
 import sys
 
+import bitcoin.core.script
+
 _ssl = ctypes.cdll.LoadLibrary(ctypes.util.find_library('ssl') or 'libeay32')
 
 # this specifies the curve used with ECDSA.
 _NID_secp256k1 = 714 # from openssl/obj_mac.h
+
+# test that openssl support secp256k1
+if _ssl.EC_KEY_new_by_curve_name(_NID_secp256k1) == 0:
+    errno = _ssl.ERR_get_error()
+    errmsg = ctypes.create_string_buffer(120)
+    _ssl.ERR_error_string_n(errno, errmsg, 120)
+    raise RuntimeError('openssl error: %s' % errmsg.value)
 
 # Thx to Sam Devlin for the ctypes magic 64-bit fix.
 def _check_result (val, func, args):
@@ -35,6 +44,11 @@ def _check_result (val, func, args):
 
 _ssl.EC_KEY_new_by_curve_name.restype = ctypes.c_void_p
 _ssl.EC_KEY_new_by_curve_name.errcheck = _check_result
+
+# From openssl/ecdsa.h
+class ECDSA_SIG_st(ctypes.Structure):
+     _fields_ = [("r", ctypes.c_void_p),
+                ("s", ctypes.c_void_p)]
 
 class CECKey:
     """Wrapper around OpenSSL's EC_KEY"""
@@ -99,7 +113,6 @@ class CECKey:
         return kdf(r)
 
     def sign(self, hash):
-        # FIXME: need unit tests for below cases
         if not isinstance(hash, bytes):
             raise TypeError('Hash must be bytes instance; got %r' % hash.__class__)
         if len(hash) != 32:
@@ -110,11 +123,60 @@ class CECKey:
         mb_sig = ctypes.create_string_buffer(sig_size0.value)
         result = _ssl.ECDSA_sign(0, hash, len(hash), mb_sig, ctypes.byref(sig_size0), self.k)
         assert 1 == result
-        return mb_sig.raw[:sig_size0.value]
+        if bitcoin.core.script.IsLowDERSignature(mb_sig.raw[:sig_size0.value]):
+            return mb_sig.raw[:sig_size0.value]
+        else:
+            return self.signature_to_low_s(mb_sig.raw[:sig_size0.value])
+
+    def signature_to_low_s(self, sig):
+        der_sig = ECDSA_SIG_st()
+        _ssl.d2i_ECDSA_SIG(ctypes.byref(ctypes.pointer(der_sig)), ctypes.byref(ctypes.c_char_p(sig)), len(sig))
+        group = _ssl.EC_KEY_get0_group(self.k)
+        order = _ssl.BN_new()
+        halforder = _ssl.BN_new()
+        ctx = _ssl.BN_CTX_new()
+        _ssl.EC_GROUP_get_order(group, order, ctx)
+        _ssl.BN_rshift1(halforder, order)
+
+        # Verify that s is over half the order of the curve before we actually subtract anything from it
+        if _ssl.BN_cmp(der_sig.s, halforder) > 0:
+          _ssl.BN_sub(der_sig.s, order, der_sig.s)
+
+        _ssl.BN_free(halforder)
+        _ssl.BN_free(order)
+        _ssl.BN_CTX_free(ctx)
+
+        derlen = _ssl.i2d_ECDSA_SIG(ctypes.pointer(der_sig), 0)
+        if derlen == 0:
+            _ssl.ECDSA_SIG_free(der_sig)
+            return None
+        new_sig = ctypes.create_string_buffer(derlen)
+        _ssl.i2d_ECDSA_SIG(ctypes.pointer(der_sig), ctypes.byref(ctypes.pointer(new_sig)))
+        _ssl.BN_free(der_sig.r)
+        _ssl.BN_free(der_sig.s)
+
+        return new_sig.raw
 
     def verify(self, hash, sig):
         """Verify a DER signature"""
-        return _ssl.ECDSA_verify(0, hash, len(hash), sig, len(sig), self.k) == 1
+        if not sig:
+          return false
+
+        # New versions of OpenSSL will reject non-canonical DER signatures. de/re-serialize first.
+        norm_sig = ctypes.c_void_p(0)
+        _ssl.d2i_ECDSA_SIG(ctypes.byref(norm_sig), ctypes.byref(ctypes.c_char_p(sig)), len(sig))
+
+        derlen = _ssl.i2d_ECDSA_SIG(norm_sig, 0)
+        if derlen == 0:
+            _ssl.ECDSA_SIG_free(norm_sig)
+            return false
+
+        norm_der = ctypes.create_string_buffer(derlen)
+        _ssl.i2d_ECDSA_SIG(norm_sig, ctypes.byref(ctypes.pointer(norm_der)))
+        _ssl.ECDSA_SIG_free(norm_sig)
+
+        # -1 = error, 0 = bad sig, 1 = good
+        return _ssl.ECDSA_verify(0, hash, len(hash), norm_der, derlen, self.k) == 1
 
     def set_compressed(self, compressed):
         if compressed:

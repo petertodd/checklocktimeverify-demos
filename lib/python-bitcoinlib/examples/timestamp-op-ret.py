@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 
 # Copyright (C) 2014 The python-bitcoinlib developers
 #
@@ -55,7 +55,7 @@ for digest in digests:
     change_pubkey = proxy.validateaddress(change_addr)['pubkey']
     change_out = CMutableTxOut(MAX_MONEY, CScript([change_pubkey, OP_CHECKSIG]))
 
-    digest_outs = [CMutableTxOut(0, CScript([script.OP_RETURN, digest]))]
+    digest_outs = [CMutableTxOut(0, CScript([OP_RETURN, digest]))]
 
     txouts = [change_out] + digest_outs
 
